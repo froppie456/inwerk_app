@@ -1,0 +1,471 @@
+﻿<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PLUS Inwerk Dashboard - Multi-Winkel</title>
+  
+  <!-- React & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { plusGroen: '#00A859' }
+        }
+      }
+    }
+  </script>
+  
+  <!-- Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-gray-100 text-gray-800 antialiased font-sans">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // --- VUL HIER JOUW SUPABASE GEGEVENS IN ---
+    const SUPABASE_URL = 'https://HIER-JOUW-URL.supabase.co';
+    const SUPABASE_KEY = 'HIER-JOUW-LANGE-ANON-KEY';
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    // ------------------------------------------
+
+    function App() {
+      // --- AUTHENTICATIE STATE ---
+      const [session, setSession] = useState(null);
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [authLoading, setAuthLoading] = useState(true);
+      const [authError, setAuthError] = useState('');
+      const [authMessage, setAuthMessage] = useState('');
+      const [isLoginMode, setIsLoginMode] = useState(true);
+
+      // --- APP STATE ---
+      const [activeTab, setActiveTab] = useState('medewerkers');
+      const [diensten, setDiensten] = useState({});
+      const [medewerkers, setMedewerkers] = useState([]);
+      const [nieuweTaakInput, setNieuweTaakInput] = useState({});
+      const [nieuweDienstNaam, setNieuweDienstNaam] = useState('');
+      const [nieuweMedewerker, setNieuweMedewerker] = useState({ naam: '', leeftijd: 15 });
+      const [showToevoegen, setShowToevoegen] = useState(false);
+      const [expandedMedewerker, setExpandedMedewerker] = useState(null);
+      const [dataLoading, setDataLoading] = useState(false);
+
+      // --- EFFECT: CHECK LOGIN STATUS ---
+      useEffect(() => {
+        supabase.auth.getSession().then(({ data: { session } }) => {
+          setSession(session);
+          setAuthLoading(false);
+        });
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+          setSession(session);
+        });
+
+        return () => subscription.unsubscribe();
+      }, []);
+
+      // --- EFFECT: HAAL DATA OP ALS INGELOGD ---
+      useEffect(() => {
+        if (session?.user) {
+          fetchData();
+        }
+      }, [session]);
+
+      // --- AUTHENTICATIE FUNCTIES ---
+      const handleAuthSubmit = async (e) => {
+        e.preventDefault();
+        setAuthLoading(true);
+        setAuthError('');
+        setAuthMessage('');
+
+        if (isLoginMode) {
+          const { error } = await supabase.auth.signInWithPassword({ email, password });
+          if (error) setAuthError(error.message);
+        } else {
+          const { data, error } = await supabase.auth.signUp({ email, password });
+          if (error) {
+            setAuthError(error.message);
+          } else {
+            if (!data.session) {
+              setAuthMessage("Account aangemaakt! Bekijk je e-mail om je account te bevestigen.");
+            }
+          }
+        }
+        setAuthLoading(false);
+      };
+
+      const handleLogout = async () => {
+        await supabase.auth.signOut();
+      };
+
+      // --- DATA FUNCTIES ---
+      async function fetchData() {
+        setDataLoading(true);
+        const userId = session.user.id;
+
+        const { data: dienstenData } = await supabase
+          .from('diensten')
+          .select('*')
+          .eq('winkel_id', userId);
+          
+        if (dienstenData) {
+          const dienstenObj = {};
+          dienstenData.forEach(d => { dienstenObj[d.naam] = d.taken || []; });
+          setDiensten(dienstenObj);
+        }
+
+        const { data: medewerkersData } = await supabase
+          .from('medewerkers')
+          .select('*')
+          .eq('winkel_id', userId)
+          .order('naam');
+          
+        if (medewerkersData) {
+          setMedewerkers(medewerkersData);
+        }
+        setDataLoading(false);
+      }
+
+      // --- SUPABASE ACTIES (DIENSTEN) ---
+      const voegDienstToe = async () => {
+        if (!nieuweDienstNaam.trim()) return;
+        const formatNaam = `Dienst: ${nieuweDienstNaam.trim()}`;
+        if (diensten[formatNaam]) { alert("Deze dienst bestaat al!"); return; }
+
+        const { error } = await supabase.from('diensten').insert([{ 
+            naam: formatNaam, 
+            taken: [],
+            winkel_id: session.user.id 
+        }]);
+        
+        if (!error) {
+            setDiensten({ ...diensten, [formatNaam]: [] });
+            setNieuweDienstNaam('');
+        }
+      };
+
+      const voegTaakToe = async (dienstNaam) => {
+        const taakNaam = nieuweTaakInput[dienstNaam];
+        if (!taakNaam) return;
+
+        const huidigeTaken = diensten[dienstNaam] || [];
+        const nieuweTaken = [...huidigeTaken, taakNaam];
+
+        await supabase.from('diensten')
+            .upsert({ naam: dienstNaam, taken: nieuweTaken, winkel_id: session.user.id }) 
+            .eq('winkel_id', session.user.id); 
+        
+        setDiensten({ ...diensten, [dienstNaam]: nieuweTaken });
+        setNieuweTaakInput({ ...nieuweTaakInput, [dienstNaam]: '' });
+      };
+
+      const verwijderTaak = async (dienstNaam, taakIndex) => {
+        const nieuweTaken = [...diensten[dienstNaam]];
+        nieuweTaken.splice(taakIndex, 1);
+        
+        await supabase.from('diensten')
+            .update({ taken: nieuweTaken })
+            .eq('naam', dienstNaam)
+            .eq('winkel_id', session.user.id);
+            
+        setDiensten({ ...diensten, [dienstNaam]: nieuweTaken });
+      };
+
+      // --- SUPABASE ACTIES (MEDEWERKERS) ---
+      const voegMedewerkerToe = async () => {
+        if (!nieuweMedewerker.naam) return;
+        
+        const nieuweData = {
+          naam: nieuweMedewerker.naam,
+          leeftijd: parseInt(nieuweMedewerker.leeftijd),
+          toegewezen_diensten: [],
+          afgevinkte_taken: [],
+          winkel_id: session.user.id 
+        };
+
+        const { data, error } = await supabase.from('medewerkers').insert([nieuweData]).select();
+        
+        if (data) {
+          setMedewerkers([...medewerkers, data[0]]);
+          setNieuweMedewerker({ naam: '', leeftijd: 15 });
+          setShowToevoegen(false);
+        }
+      };
+
+      // NIEUW: MEDEWERKER VERWIJDEREN
+      const verwijderMedewerker = async (medewerkerId, naam, event) => {
+        // StopPropagation zorgt ervoor dat de accordeon niet openklapt als je op verwijderen klikt
+        event.stopPropagation();
+        
+        const bevestiging = window.confirm(`Weet je zeker dat je ${naam} wilt verwijderen? Alle inwerk-voortgang gaat hiermee verloren.`);
+        if (!bevestiging) return;
+
+        const { error } = await supabase
+          .from('medewerkers')
+          .delete()
+          .eq('id', medewerkerId)
+          .eq('winkel_id', session.user.id); // Extra check voor veiligheid
+        
+        if (!error) {
+          setMedewerkers(medewerkers.filter(m => m.id !== medewerkerId));
+        } else {
+          alert("Er is iets misgegaan bij het verwijderen.");
+          console.error(error);
+        }
+      };
+
+      const toggleDienstVoorMedewerker = async (medewerkerId, dienstNaam) => {
+        const medewerker = medewerkers.find(m => m.id === medewerkerId);
+        const nieuweDiensten = medewerker.toegewezen_diensten?.includes(dienstNaam) 
+          ? medewerker.toegewezen_diensten.filter(d => d !== dienstNaam)
+          : [...(medewerker.toegewezen_diensten || []), dienstNaam];
+
+        await supabase.from('medewerkers').update({ toegewezen_diensten: nieuweDiensten }).eq('id', medewerkerId);
+        setMedewerkers(medewerkers.map(m => m.id === medewerkerId ? { ...m, toegewezen_diensten: nieuweDiensten } : m));
+      };
+
+      const toggleTaakVoorMedewerker = async (medewerkerId, taakNaam) => {
+        const medewerker = medewerkers.find(m => m.id === medewerkerId);
+        const nieuweTaken = medewerker.afgevinkte_taken?.includes(taakNaam)
+          ? medewerker.afgevinkte_taken.filter(t => t !== taakNaam)
+          : [...(medewerker.afgevinkte_taken || []), taakNaam];
+
+        await supabase.from('medewerkers').update({ afgevinkte_taken: nieuweTaken }).eq('id', medewerkerId);
+        setMedewerkers(medewerkers.map(m => m.id === medewerkerId ? { ...m, afgevinkte_taken: nieuweTaken } : m));
+      };
+
+
+      // --- RENDER INLOGSCHERM ---
+      if (authLoading) return <div className="p-8 text-center text-gray-500">Authenticatie laden...</div>;
+      
+      if (!session) {
+        return (
+          <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+            <div className="max-w-sm w-full bg-white p-8 rounded-xl shadow-lg border border-gray-100">
+              <h1 className="text-2xl font-bold text-center text-plusGroen mb-6">
+                {isLoginMode ? 'Winkel Login' : 'Account Aanmaken'}
+              </h1>
+              
+              {authError && <div className="bg-red-50 text-red-500 p-3 rounded mb-4 text-sm">{authError}</div>}
+              {authMessage && <div className="bg-green-50 text-green-600 p-3 rounded mb-4 text-sm">{authMessage}</div>}
+              
+              <form onSubmit={handleAuthSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">E-mailadres</label>
+                  <input type="email" required className="w-full p-2 border rounded focus:ring-plusGroen focus:border-plusGroen"
+                    value={email} onChange={e => setEmail(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Wachtwoord (min. 6 tekens)</label>
+                  <input type="password" required className="w-full p-2 border rounded focus:ring-plusGroen focus:border-plusGroen"
+                    value={password} onChange={e => setPassword(e.target.value)} minLength="6" />
+                </div>
+                <button type="submit" className="w-full bg-plusGroen text-white font-bold py-2 rounded-lg hover:bg-green-700 transition-colors">
+                  {isLoginMode ? 'Inloggen' : 'Registreren'}
+                </button>
+              </form>
+
+              <div className="mt-6 text-center">
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    setIsLoginMode(!isLoginMode);
+                    setAuthError('');
+                    setAuthMessage('');
+                  }} 
+                  className="text-sm text-plusGroen hover:underline"
+                >
+                  {isLoginMode 
+                    ? "Nog geen account? Klik hier om te registreren." 
+                    : "Heb je al een account? Log hier in."}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // --- RENDER APP (ALS INGELOGD) ---
+      if (dataLoading) return <div className="p-8 text-center text-gray-500 font-bold">Winkel data ophalen...</div>;
+
+      return (
+        <div className="max-w-md mx-auto min-h-screen bg-gray-50 pb-20 shadow-lg">
+          <div className="bg-plusGroen text-white p-4 sticky top-0 z-10 shadow-md flex flex-col">
+            <div className="flex justify-between items-center">
+                <h1 className="text-xl font-bold">PLUS Inwerken</h1>
+                <button onClick={handleLogout} className="text-sm bg-white text-plusGroen px-2 py-1 rounded font-bold">Uitloggen</button>
+            </div>
+            <div className="flex gap-4 mt-4">
+              <button 
+                onClick={() => setActiveTab('medewerkers')} 
+                className={`pb-1 px-1 border-b-2 ${activeTab === 'medewerkers' ? 'border-white font-bold' : 'border-transparent text-green-200'}`}
+              >
+                Medewerkers
+              </button>
+              <button 
+                onClick={() => setActiveTab('diensten')}
+                className={`pb-1 px-1 border-b-2 ${activeTab === 'diensten' ? 'border-white font-bold' : 'border-transparent text-green-200'}`}
+              >
+                Diensten Beheer
+              </button>
+            </div>
+          </div>
+
+          <div className="p-4">
+            {activeTab === 'medewerkers' && (
+              <div>
+                {!showToevoegen ? (
+                  <button onClick={() => setShowToevoegen(true)} className="w-full bg-plusGroen text-white font-bold py-3 rounded-lg mb-6 shadow-sm">
+                    + Nieuwe Medewerker
+                  </button>
+                ) : (
+                  <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-100">
+                    <h3 className="font-bold mb-3">Nieuwe medewerker</h3>
+                    <input type="text" placeholder="Naam" className="w-full p-2 border rounded mb-3"
+                      value={nieuweMedewerker.naam} onChange={e => setNieuweMedewerker({...nieuweMedewerker, naam: e.target.value})} />
+                    <select className="w-full p-2 border rounded mb-3"
+                      value={nieuweMedewerker.leeftijd} onChange={e => setNieuweMedewerker({...nieuweMedewerker, leeftijd: e.target.value})}>
+                      {[14,15,16,17,18].map(l => <option key={l} value={l}>{l} jaar</option>)}
+                    </select>
+                    <div className="flex gap-2">
+                      <button onClick={voegMedewerkerToe} className="flex-1 bg-plusGroen text-white py-2 rounded font-bold">Opslaan</button>
+                      <button onClick={() => setShowToevoegen(false)} className="flex-1 bg-gray-200 text-gray-800 py-2 rounded font-bold">Annuleren</button>
+                    </div>
+                  </div>
+                )}
+
+                {medewerkers.length === 0 && !showToevoegen && (
+                  <div className="text-center p-8 text-gray-500">
+                    Nog geen medewerkers toegevoegd aan deze winkel.
+                  </div>
+                )}
+
+                {medewerkers.map(m => (
+                  <div key={m.id} className="bg-white rounded-xl shadow-sm mb-4 overflow-hidden border border-gray-100">
+                    <div className="p-4 flex justify-between items-center cursor-pointer" onClick={() => setExpandedMedewerker(expandedMedewerker === m.id ? null : m.id)}>
+                      <div>
+                        <h3 className="font-bold text-lg">{m.naam} <span className="text-gray-400 text-sm font-normal">({m.leeftijd}j)</span></h3>
+                        <p className="text-xs text-gray-500 mt-1">{(m.toegewezen_diensten || []).length} diensten in opleiding</p>
+                      </div>
+                      
+                      {/* NIEUW: VERWIJDER KNOP TOEGEVOEGD */}
+                      <div className="flex items-center gap-3">
+                        <button 
+                          onClick={(e) => verwijderMedewerker(m.id, m.naam, e)} 
+                          className="text-red-400 hover:text-red-600 text-sm font-medium"
+                        >
+                          Verwijderen
+                        </button>
+                        <span className="text-plusGroen font-bold text-xl">{expandedMedewerker === m.id ? '−' : '+'}</span>
+                      </div>
+                    </div>
+
+                    {expandedMedewerker === m.id && (
+                      <div className="p-4 bg-gray-50 border-t border-gray-100">
+                        <h4 className="font-bold text-sm text-gray-500 mb-2 uppercase">1. Diensten Toewijzen</h4>
+                        <div className="mb-6 space-y-2">
+                          {Object.keys(diensten).map(dienstNaam => {
+                            const isAssigned = (m.toegewezen_diensten || []).includes(dienstNaam);
+                            return (
+                              <label key={dienstNaam} className="flex items-center justify-between bg-white p-2 rounded border cursor-pointer">
+                                <span className="text-sm font-medium">{dienstNaam}</span>
+                                <input type="checkbox" checked={isAssigned} onChange={() => toggleDienstVoorMedewerker(m.id, dienstNaam)} className="w-5 h-5 accent-plusGroen" />
+                              </label>
+                            )
+                          })}
+                        </div>
+
+                        <h4 className="font-bold text-sm text-gray-500 mb-2 uppercase">2. Afvinklijsten (Actief)</h4>
+                        {(m.toegewezen_diensten || []).length === 0 ? (
+                            <p className="text-sm text-gray-500 italic">Vink hierboven diensten aan om taken te zien.</p>
+                        ) : (
+                          (m.toegewezen_diensten || []).map(dienstNaam => (
+                            <div key={dienstNaam} className="mb-4 bg-white border rounded-lg p-3">
+                              <h5 className="font-bold mb-2 border-b pb-1 text-plusGroen">{dienstNaam}</h5>
+                              {(diensten[dienstNaam] || []).length === 0 ? (
+                                <p className="text-sm text-gray-400 italic">Geen taken voor deze dienst ingesteld.</p>
+                              ) : (
+                                (diensten[dienstNaam] || []).map(taak => {
+                                  const isDone = (m.afgevinkte_taken || []).includes(taak);
+                                  return (
+                                    <label key={taak} className="flex items-start gap-3 py-2 cursor-pointer">
+                                      <input type="checkbox" checked={isDone} onChange={() => toggleTaakVoorMedewerker(m.id, taak)} className="w-5 h-5 mt-0.5 accent-plusGroen flex-shrink-0" />
+                                      <span className={`text-sm ${isDone ? 'line-through text-gray-400' : 'text-gray-700'}`}>{taak}</span>
+                                    </label>
+                                  )
+                                })
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeTab === 'diensten' && (
+              <div>
+                <div className="bg-white rounded-xl shadow-sm mb-6 border border-gray-100 p-4">
+                  <h3 className="font-bold text-lg mb-3">Nieuwe Dienst Aanmaken</h3>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" placeholder="Naam van de dienst (bijv. Vriescel)" 
+                      className="flex-1 p-2 text-sm border rounded"
+                      value={nieuweDienstNaam}
+                      onChange={e => setNieuweDienstNaam(e.target.value)}
+                    />
+                    <button onClick={voegDienstToe} className="bg-plusGroen text-white px-4 py-2 rounded text-sm font-bold">Toevoegen</button>
+                  </div>
+                </div>
+
+                {Object.keys(diensten).length === 0 && (
+                  <div className="text-center p-8 text-gray-500">
+                    Nog geen diensten toegevoegd. Maak hierboven je eerste dienst aan!
+                  </div>
+                )}
+
+                {Object.entries(diensten).map(([dienstNaam, takenlijst]) => (
+                  <div key={dienstNaam} className="bg-white rounded-xl shadow-sm mb-4 border border-gray-100 p-4">
+                    <h3 className="font-bold text-lg mb-3 text-plusGroen">{dienstNaam}</h3>
+                    <ul className="space-y-2 mb-4">
+                      {takenlijst.map((taak, idx) => (
+                        <li key={idx} className="flex items-center justify-between text-sm bg-gray-50 p-2 rounded border border-gray-100">
+                          <span className="text-gray-700 mr-2">{taak}</span>
+                          <button onClick={() => verwijderTaak(dienstNaam, idx)} className="text-red-400 hover:text-red-600 font-bold p-1">X</button>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" placeholder="Nieuwe taak voor deze dienst..." className="flex-1 p-2 text-sm border rounded"
+                        value={nieuweTaakInput[dienstNaam] || ''}
+                        onChange={e => setNieuweTaakInput({...nieuweTaakInput, [dienstNaam]: e.target.value})}
+                      />
+                      <button onClick={() => voegTaakToe(dienstNaam)} className="bg-plusGroen text-white px-3 py-2 rounded text-sm font-bold">+</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
